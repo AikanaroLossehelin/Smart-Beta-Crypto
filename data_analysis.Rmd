@@ -1,0 +1,381 @@
+---
+title: "data_analysis"
+author: "Hugo"
+date: "2023-12-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, include=FALSE}
+library(here)
+library(readr)
+library(ggplot2)
+library(dplyr)
+library(magrittr)
+library(tidyr)
+#library(tseries)
+library(rugarch)
+library(forecast)
+```
+
+```{r file_setup, include=FALSE}
+here::i_am("data_analysis.Rmd")
+```
+
+```{r echo=FALSE}
+daily_crypto_data <- read_csv(here("../Data", "daily_crypto_data.csv"), show_col_types = FALSE)
+market_caps_daily <- read_csv(here("../Data", "market_caps_daily.csv"), show_col_types = FALSE)
+volume_binance_daily <- read_csv(here("../Data", "volume_binance_daily.csv"), show_col_types = FALSE)
+```
+
+```{r echo=FALSE}
+caps_stat <- market_caps_daily %>%
+  summarise_if(
+    !grepl("date", names(.)),
+    list(
+      Mean = ~mean(., na.rm = TRUE),
+      Median = ~median(., na.rm = TRUE),
+      Min = ~min(., na.rm = TRUE),
+      Max = ~max(., na.rm = TRUE),
+      SD = ~sd(., na.rm = TRUE)
+    )
+  )
+
+caps_stat <- caps_stat %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = c("Coin", ".value"),
+    names_pattern = "(.*)_(.*)"
+  )
+
+volume_stat <- volume_binance_daily %>%
+  summarise_if(
+    !grepl("date", names(.)),
+    list(
+      Mean = ~mean(., na.rm = TRUE),
+      Median = ~median(., na.rm = TRUE),
+      Min = ~min(., na.rm = TRUE),
+      Max = ~max(., na.rm = TRUE),
+      SD = ~sd(., na.rm = TRUE)
+    )
+  )
+
+volume_stat <- volume_stat %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = c("Coin", ".value"),
+    names_pattern = "(.*)_(.*)"
+  )
+
+rdt_crypto <- daily_crypto_data %>%
+  mutate(across(-date, ~log(.) - lag(log(.)))) %>%
+  slice(-1)
+
+rdt_stat <- rdt_crypto %>%
+  summarise_if(
+    !grepl("date", names(.)),
+    list(
+      Mean = ~mean(., na.rm = TRUE),
+      Median = ~median(., na.rm = TRUE),
+      Min = ~min(., na.rm = TRUE),
+      Max = ~max(., na.rm = TRUE),
+      SD = ~sd(., na.rm = TRUE)
+    )
+  )
+
+rdt_stat <- rdt_stat %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = c("Coin", ".value"),
+    names_pattern = "(.*)_(.*)"
+  )
+```
+
+```{r echo=FALSE}
+rdt_stat %>%
+knitr::kable(caption = "Statistiques descriptives des rendements des coins")
+```
+
+```{r echo=FALSE}
+caps_stat %>%
+knitr::kable(caption = "Statisques descriptives des capitalisation des coins")
+```
+
+```{r echo=FALSE}
+volume_stat %>%
+knitr::kable(caption = "Statisques descriptives des volumes des coins")
+```
+
+
+
+```{r echo=FALSE}
+volume <- volume_binance_daily %>%
+  pivot_longer(
+    -date, 
+    names_to = "currency", 
+    values_to = "volume" 
+  )
+
+caps <- market_caps_daily %>%
+  pivot_longer(
+    -date, 
+    names_to = "currency",
+    values_to = "cap" 
+  )
+
+rdt <- rdt_crypto %>%
+  pivot_longer(
+    -date,
+    names_to = "currency", 
+    values_to = "value" 
+  )
+```
+
+## Etude des volumes
+
+```{r echo=FALSE}
+ggplot(volume, aes(x = date, y = volume)) +
+  geom_line() +
+  facet_wrap(~ currency, scales = "free_y") +
+  theme_minimal() +
+  labs(title = "Évolution du volume par Mcoin", x = "Date", y = "Volume")
+```
+
+```{r echo=FALSE}
+
+ggplot(data = volume, aes(x = volume, fill = currency)) +
+  geom_density(alpha = 0.5) +
+  scale_x_log10() +
+  facet_wrap(~currency) +
+  labs(title = "Densité de distribution des volumes par coin", x = "Volume", y = "Densité")
+```
+
+```{r echo=FALSE}
+p <- ggplot(volume_stat, aes(x = Mean, y = SD)) +
+  geom_smooth(method = "lm", formula = y ~ x, color = "blue") +
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10() +
+  theme_minimal() +
+  labs(title = "Dispersion des coins par moyenne et écart-type de leur volume", 
+       x = "Moyenne", 
+       y = "Écart-Type")
+
+p <- p + geom_text(aes(label = Coin, x = Mean, y = SD), 
+                   vjust = -0.5, hjust = 0.5, check_overlap = TRUE)
+
+print(p)
+```
+
+
+```{r echo=FALSE}
+ggplot(volume, aes(x = currency, y = volume)) +
+  scale_y_log10() +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 65, hjust = 1)) +
+  labs(title = "Dispersion des volumes pour chaque coin", 
+       x = "Coin", 
+       y = "Volume")
+```
+```{r echo=FALSE, message=FALSE}
+
+mean_volume <- mean(volume$volume, na.rm = TRUE)
+sd_volume <- sd(volume$volume, na.rm = TRUE)
+skewness_volume <- mean((volume$volume-mean_volume)^3/sd_volume^3, na.rm=TRUE)
+kurtosis_volume <- mean((volume$volume-mean_volume)^4/sd_volume^4, na.rm=TRUE)
+
+p <- ggplot(volume, aes(x = volume)) +
+  geom_density(fill = "blue", alpha = 0.5) +
+  scale_x_log10() +
+  geom_vline(xintercept = mean_volume, color = "red", linetype = "dashed") + 
+  annotate("text", x = Inf, y = Inf, label = paste("Ecart-type:", round(sd_volume, 2)), 
+           hjust = 1.1, vjust = 1.1, size = 4, color = "black") +
+  annotate("text", x = Inf, y = Inf, label = paste("Skewness:", round(skewness_volume, 2)), 
+           hjust = 1.1, vjust = 5.1, size = 4, color = "black") +
+  annotate("text", x = Inf, y = Inf, label = paste("Kurtosis:", round(kurtosis_volume, 2)), 
+           hjust = 1.1, vjust = 9.1, size = 4, color = "black") +
+  labs(title = "Distribution des volumes et répartition de nos coins", 
+       x = "Volume", 
+       y = "Densité")
+
+for(i in 1:nrow(volume_stat)) {
+  p <- p + annotate("text", x = volume_stat$Mean[i], y = 0.05, label = volume_stat$Coin[i], angle = 45, hjust = 0, vjust = 0, size = 3)
+}
+
+print(p)
+
+```
+
+## Etude des capitalisations
+
+```{r echo=FALSE}
+ggplot(caps, aes(x = date, y = cap)) +
+  geom_line() +
+  facet_wrap(~ currency, scales = "free_y") +
+  theme_minimal() +
+  labs(title = "Évolution de la capitalisation par Monnaie", x = "Date", y = "Capitalisation")
+```
+
+
+```{r echo=FALSE}
+ggplot(data = caps, aes(x = cap, fill = currency)) +
+  geom_density(alpha = 0.5) +
+  scale_x_log10() +
+  facet_wrap(~currency) +
+  labs(title = "Densité de la distribution des capitalisations par coin", x = "Capitalisation", y = "Densité")
+```
+
+```{r echo=FALSE}
+p <- ggplot(caps_stat, aes(x = Mean, y = SD)) +
+  geom_smooth(method = "lm", formula = y ~ x, color = "blue") +
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10() +
+  theme_minimal() +
+  labs(title = "Dispersion des coins par moyenne et écart-type de leur capitalisation", 
+       x = "Moyenne", 
+       y = "Écart-Type")
+
+p <- p + geom_text(aes(label = Coin, x = Mean, y = SD), 
+                   vjust = -0.5, hjust = 0.5, check_overlap = TRUE)
+
+print(p)
+```
+
+```{r echo=FALSE}
+ggplot(caps, aes(x = currency, y = cap)) +
+  scale_y_log10() +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 65, hjust = 1)) +
+  labs(title = "Dispersion des coapitalisations par coin", 
+       x = "Coin", 
+       y = "Capitalisation")
+```
+
+
+## Etude comparée des volumes et capitalisations
+
+```{r echo=FALSE}
+merged_data <- merge(caps_stat, volume_stat, by = "Coin")
+
+p <- ggplot(merged_data, aes(x = Mean.x, y = Mean.y)) +
+  geom_smooth(method = "lm", formula = y ~ x, color = "blue") + 
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10() +
+  theme_minimal() +
+  labs(title = "Comparaison des moyennes de capitalisation et de volume par coin",
+       x = "Moyenne de capitalisation",
+       y = "Moyenne de volume")
+
+p <- p + geom_text(aes(label = Coin, x = Mean.x, y = Mean.y), 
+                   vjust = -0.5, hjust = 0.5, check_overlap = TRUE)
+
+print(p)
+```
+
+# Etude des rendements
+
+
+```{r echo=FALSE, warning=FALSE}
+ggplot(rdt, aes(x = date, y = value)) +
+  geom_line() +
+  facet_wrap(~ currency, scales = "free_y") +
+  theme_minimal() +
+  labs(title = "Évolution du rendement par coin", x = "Date", y = "rendement")
+```
+
+```{r echo=FALSE, warning=FALSE}
+ggplot(rdt, aes(x = value, fill = currency)) +
+  geom_density(alpha = 0.5) +
+  scale_x_log10() +
+  facet_wrap(~currency) +
+  labs(title = "Densité de distribution des rendements par coin", x = "Rendement", y = "Densité")
+```
+
+
+```{r echo=FALSE, warning=FALSE}
+ggplot(rdt, aes(x = currency, y = value)) +
+  scale_y_log10() +
+  geom_boxplot(na.rm = TRUE) +
+  theme(axis.text.x = element_text(angle = 65, hjust = 1)) +
+  ylab("rendement")
+```
+
+
+```{r echo=FALSE}
+mean_rdt <- mean(rdt$value, na.rm = TRUE)
+sd_rdt <- sd(rdt$value, na.rm = TRUE)
+skewness_rdt <- mean((rdt$value-mean_rdt)^3/sd_rdt^3, na.rm=TRUE)
+kurtosis_rdt <- mean((rdt$value-mean_rdt)^4/sd_rdt^4, na.rm=TRUE)
+
+p <- ggplot(rdt, aes(x = value)) +
+  geom_density(fill = "blue", alpha = 0.5) +
+  
+  geom_vline(xintercept = mean_rdt, color = "red", linetype = "dashed") + 
+  annotate("text", x = Inf, y = Inf, label = paste("Ecart-type:", round(sd_rdt, 2)), 
+           hjust = 1.1, vjust = 1.1, size = 4, color = "black") +
+  annotate("text", x = Inf, y = Inf, label = paste("Skewness:", round(skewness_rdt, 2)), 
+           hjust = 1.1, vjust = 5.1, size = 4, color = "black") +
+  annotate("text", x = Inf, y = Inf, label = paste("Kurtosis:", round(kurtosis_rdt, 2)), 
+           hjust = 1.1, vjust = 9.1, size = 4, color = "black") +
+  labs(title = "Distribution des rendements et répartition de nos coins", 
+       x = "Rendement", 
+       y = "Densité")
+
+for(i in 1:nrow(rdt_stat)) {
+  p <- p + annotate("text", x = rdt_stat$Mean[i], y = 0.05, label = rdt_stat$Coin[i], angle = 45, hjust = 0, vjust = 0, size = 3)
+}
+
+print(p)
+```
+
+```{r echo=FALSE}
+p <- ggplot(rdt_stat, aes(x = Mean, y = SD)) +
+  geom_smooth(method = "lm", formula = y ~ x, color = "blue") +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Dispersion des coins par moyenne et écart-type de leur rendement", 
+       x = "Moyenne", 
+       y = "Écart-Type")
+
+p <- p + geom_text(aes(label = Coin, x = Mean, y = SD), 
+                   vjust = -0.5, hjust = 0.5, check_overlap = TRUE)
+
+print(p)
+```
+
+
+
+
+### Modélisation des volatilités conditionnelles des rendements
+
+```{r echo=FALSE}
+monnaie_cols <- colnames(rdt_crypto)[-1]
+
+graphs_per_window = 4
+
+for(i in seq(1, length(monnaie_cols), by = graphs_per_window)) {
+  par(mfrow = c(2, 2))
+  for(j in i:min(i+graphs_per_window-1, length(monnaie_cols))) {
+    mvbd <- mean(rdt_crypto[[monnaie_cols[j]]])
+    ts_data <- ts((rdt_crypto[[monnaie_cols[j]]] - mvbd)^2)
+    Pacf(ts_data, main = paste("PACF pour", monnaie_cols[j]))
+  }
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+
